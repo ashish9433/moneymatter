@@ -7,6 +7,7 @@
         <!-- Wide: both buttons inline. Narrow: collapse into a kebab menu so the actions
              never wrap onto their own row. Popover-with-dialog-trigger mirrors the sidebar. -->
         <div class="hidden flex-wrap gap-2 @[35rem]/accounts-page:flex">
+          <AccountsCategoryMenu trigger-variant="labeled" />
           <AccountsSortMenu trigger-variant="labeled" />
 
           <CreateVehicleDialog>
@@ -19,6 +20,7 @@
         </div>
 
         <div class="flex items-center gap-2 @[35rem]/accounts-page:hidden">
+          <AccountsCategoryMenu trigger-variant="icon" />
           <AccountsSortMenu trigger-variant="icon" />
 
           <Popover.Popover :open="isActionsMenuOpen" @update:open="isActionsMenuOpen = $event">
@@ -107,11 +109,26 @@
                 :folder-group-names="folderGroupNames"
               />
             </div>
+            <p v-else-if="allConnectionRows.length" class="text-muted-foreground px-1 py-2 text-sm">
+              {{ $t('accounts.categoryView.noMatches') }}
+            </p>
             <p v-else class="text-muted-foreground px-1 py-2 text-sm">{{ $t('accounts.noBanksConnected') }}</p>
           </AccountsSection>
 
           <AccountsSection v-if="manualItems.length" :title="$t('accounts.sections.manual')" :count="manualCount">
-            <div class="border-border/60 bg-card divide-border/60 divide-y overflow-hidden rounded-xl border">
+            <div
+              v-if="isGroupedByCategory"
+              class="border-border/60 bg-card divide-border/60 divide-y overflow-hidden rounded-xl border"
+            >
+              <AccountCategoryGroup
+                v-for="bucket in manualCategoryBuckets"
+                :key="bucket.category"
+                :category="bucket.category"
+                :accounts="bucket.accounts"
+                :folder-group-names="folderGroupNames"
+              />
+            </div>
+            <div v-else class="border-border/60 bg-card divide-border/60 divide-y overflow-hidden rounded-xl border">
               <template v-for="item in manualItems" :key="item.id">
                 <AccountGroupRow v-if="item.kind === 'group'" :group="item.group" />
                 <AccountListRow v-else :account="item.account" />
@@ -120,9 +137,9 @@
           </AccountsSection>
 
           <AccountsSection
-            v-if="sharedAccounts.length"
+            v-if="visibleSharedAccounts.length"
             :title="$t('accounts.sections.sharedWithMe')"
-            :count="sharedAccounts.length"
+            :count="visibleSharedAccounts.length"
           >
             <div class="border-border/60 bg-card divide-border/60 divide-y overflow-hidden rounded-xl border">
               <AccountListRow v-for="account in sortedShared" :key="account.id" :account="account" />
@@ -130,9 +147,9 @@
           </AccountsSection>
 
           <AccountsSection
-            v-if="vehiclesWithAccount.length"
+            v-if="visibleVehicles.length"
             :title="$t('accounts.sections.vehicles')"
-            :count="vehiclesWithAccount.length"
+            :count="visibleVehicles.length"
           >
             <template v-if="baseCurrencyCode" #action>
               <GroupTotal
@@ -154,7 +171,7 @@
             </div>
           </AccountsSection>
 
-          <section v-if="archivedAccounts.length">
+          <section v-if="visibleArchivedAccounts.length">
             <Collapsible v-model:open="isArchivedOpen">
               <CollapsibleTrigger
                 class="focus-visible:ring-ring/40 mb-3 flex w-full items-center gap-2 rounded px-1 focus-visible:ring-2 focus-visible:outline-none"
@@ -163,7 +180,7 @@
                   {{ $t('accounts.sections.archived') }}
                 </h2>
                 <span class="text-muted-foreground/70 text-xs font-medium tabular-nums">
-                  {{ archivedAccounts.length }}
+                  {{ visibleArchivedAccounts.length }}
                 </span>
                 <ChevronDownIcon
                   class="text-muted-foreground size-3.5 transition-transform"
@@ -241,14 +258,22 @@ import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
+import {
+  filterAccountsByCategories,
+  filterGroupsByCategories,
+  groupAccountsByCategory,
+} from './accounts-category-grouping';
 import { computeAccountsOverview } from './accounts-overview-totals';
+import AccountCategoryGroup from './components/account-category-group.vue';
 import AccountGroupRow from './components/account-group-row.vue';
 import AccountListRow from './components/account-list-row.vue';
+import AccountsCategoryMenu from './components/accounts-category-menu.vue';
 import AccountsOverviewCard from './components/accounts-overview-card.vue';
 import AccountsSection from './components/accounts-section.vue';
 import AccountsSortMenu from './components/accounts-sort-menu.vue';
 import BankConnectionRow from './components/bank-connection-row.vue';
 import { collectManualAccounts, mapFolderGroupNames, pruneBankLinkedAccounts } from './manual-accounts-split';
+import { useAccountsCategoryView } from './use-accounts-category-view';
 import { useAccountsSort } from './use-accounts-sort';
 
 const route = useRoute();
@@ -259,6 +284,7 @@ const { t } = useI18n();
 const isActionsMenuOpen = ref(false);
 
 const { sortConnectionRows, sortLeafAccounts, sortVehicles, sortManual } = useAccountsSort();
+const { isGroupedByCategory, categoryFilter } = useAccountsCategoryView();
 
 const { accounts, activeAccounts, isAccountsFetched } = storeToRefs(useAccountsStore());
 
@@ -308,18 +334,32 @@ const bankAccountsByConnectionId = computed(() => {
   return map;
 });
 
-const connectionRows = computed(() =>
+const allConnectionRows = computed(() =>
   (bankConnections.value ?? []).map((connection) => ({
     connection,
     accounts: bankAccountsByConnectionId.value.get(connection.id) ?? [],
   })),
 );
+// The category filter narrows every section's accounts. While it is active a connection with
+// no matching account is hidden; with no filter every connection stays, even an empty one.
+const connectionRows = computed(() => {
+  if (categoryFilter.value.length === 0) return allConnectionRows.value;
+  return allConnectionRows.value
+    .map((row) => ({
+      ...row,
+      accounts: filterAccountsByCategories({ accounts: row.accounts, categories: categoryFilter.value }),
+    }))
+    .filter((row) => row.accounts.length > 0);
+});
 
 // Manual section shows only manual accounts: folder groups pruned of bank-linked accounts
 // (those render under their connection above), dropped entirely when nothing manual remains.
 const manualFolderGroups = computed(() =>
-  pruneBankLinkedAccounts({
-    groups: (accountGroups.value ?? []).filter((group) => group.bankDataProviderConnectionId == null),
+  filterGroupsByCategories({
+    groups: pruneBankLinkedAccounts({
+      groups: (accountGroups.value ?? []).filter((group) => group.bankDataProviderConnectionId == null),
+    }),
+    categories: categoryFilter.value,
   }),
 );
 
@@ -370,20 +410,49 @@ const vehiclesWithAccount = computed(() =>
 // Loose rows of the Manual section: ungrouped manual accounts, plus manual accounts a
 // user placed inside a connection-managed group (that group only renders under Bank
 // connections implicitly, so without this rescue they would vanish from the page).
-const manualLooseAccounts = computed(() => [
-  ...ungroupedAccounts.value.filter((account) => !account.bankDataProviderConnectionId),
-  ...collectManualAccounts({
-    groups: (accountGroups.value ?? []).filter((group) => group.bankDataProviderConnectionId != null),
+const manualLooseAccounts = computed(() =>
+  filterAccountsByCategories({
+    accounts: [
+      ...ungroupedAccounts.value.filter((account) => !account.bankDataProviderConnectionId),
+      ...collectManualAccounts({
+        groups: (accountGroups.value ?? []).filter((group) => group.bankDataProviderConnectionId != null),
+      }),
+    ],
+    categories: categoryFilter.value,
   }),
-]);
+);
+// With "group by category" on, folders are flattened away: every manual account, whether
+// loose or inside a folder, lands in its category bucket. Each row keeps an "in <folder>"
+// subtitle so the folder organisation stays visible. Vehicles and loans never reach this
+// list (own section / own page).
+const manualCategoryBuckets = computed(() =>
+  groupAccountsByCategory({
+    accounts: [
+      ...manualLooseAccounts.value,
+      ...manualFolderGroups.value.flatMap((group) => collectGroupAccounts({ group })),
+    ],
+  }),
+);
 
 // Apply the shared sort choice to each section. Manual folds folder-groups and loose
 // accounts into one tagged list so the chosen order can interleave them.
 const sortedConnectionRows = computed(() => sortConnectionRows(connectionRows.value));
 const manualItems = computed(() => sortManual(manualFolderGroups.value, manualLooseAccounts.value));
-const sortedVehicles = computed(() => sortVehicles(vehiclesWithAccount.value));
-const sortedShared = computed(() => sortLeafAccounts(sharedAccounts.value));
-const sortedArchived = computed(() => sortLeafAccounts(archivedAccounts.value));
+// Vehicles keep their own section; they honor the filter only through the "Vehicle" option.
+const visibleVehicles = computed(() =>
+  categoryFilter.value.length === 0 || categoryFilter.value.includes(ACCOUNT_CATEGORIES.vehicle)
+    ? vehiclesWithAccount.value
+    : [],
+);
+const visibleSharedAccounts = computed(() =>
+  filterAccountsByCategories({ accounts: sharedAccounts.value, categories: categoryFilter.value }),
+);
+const visibleArchivedAccounts = computed(() =>
+  filterAccountsByCategories({ accounts: archivedAccounts.value, categories: categoryFilter.value }),
+);
+const sortedVehicles = computed(() => sortVehicles(visibleVehicles.value));
+const sortedShared = computed(() => sortLeafAccounts(visibleSharedAccounts.value));
+const sortedArchived = computed(() => sortLeafAccounts(visibleArchivedAccounts.value));
 
 const vehicleAccounts = computed(() => vehiclesWithAccount.value.map((v) => v.account!));
 
@@ -414,7 +483,9 @@ const manualCount = computed(() => {
   return inFolders + manualLooseAccounts.value.length;
 });
 
-const vehiclesBaseTotal = computed(() => sumBaseBalance({ accounts: vehicleAccounts.value }));
+const vehiclesBaseTotal = computed(() =>
+  sumBaseBalance({ accounts: visibleVehicles.value.map((vehicle) => vehicle.account!) }),
+);
 
 const isArchivedOpen = ref(false);
 

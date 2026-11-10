@@ -39,6 +39,15 @@
       "balance": "Balance",
       "ariaLabel": "Sort accounts"
     },
+    "categoryView": {
+      "label": "Categories",
+      "labelWithFilter": "Categories ({count})",
+      "ariaLabel": "Group and filter accounts by category",
+      "groupByCategory": "Group by category",
+      "filterByCategory": "Filter by category",
+      "clear": "Clear",
+      "noMatches": "No connected accounts match the selected categories."
+    },
     "status": {
       "active": "Active",
       "expiringSoon": "Expiring soon",
